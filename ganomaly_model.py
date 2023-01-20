@@ -4,25 +4,51 @@ from typing import Tuple, Union
 import torch
 from torch import Tensor, nn
 
+class ResBlock(nn.Module):
+    def __init__(self, input_channels):
+        super().__init__()
+        self.layer1 = nn.Sequential()
+        self.layer1.add_module("Conv2d 1,1", nn.Conv2d(input_channels, input_channels*2, kernel_size=1, stride=1, padding=0, bias=False))
+        self.layer1.add_module(f"{input_channels*2}-LeakyRelu", nn.LeakyReLU(0.2, inplace=True))
+        self.layer2 = nn.Sequential()
+        self.layer2.add_module("Conv2d 3,3", nn.Conv2d(input_channels*2, input_channels*2, kernel_size=3, stride=1, padding=1, bias=False))
+        self.layer2.add_module(f"{input_channels*2}-LeakyRelu", nn.LeakyReLU(0.2, inplace=True))
+        self.layer3 = nn.Conv2d(input_channels*2, input_channels, kernel_size=1, stride=1, padding=0, bias=False)
+        self.output_act = nn.LeakyReLU(0.2, inplace=True)
+    
+    def forward(self, x):
+        output = self.layer1(x)
+        output = self.layer2(output)
+        output = self.layer3(output)
+        output = self.output_act(x+output)
+        return output
+
 class Encoder(nn.Module):
 
-    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int):
+    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int, res_block_num: int):
         """Encoder Network.
         Args:
             input_size (Tuple[int, int]): Size of input image
             latent_vec_size (int): Size of latent vector z
             img_channels (int): Number of input image channels
             n_features (int): Number of features per convolution layer
-            Defaults to 0.
+            
         """
         super().__init__()
         
         self.input_layers = nn.Sequential()
         self.input_layers.add_module(
             f"initial-conv-{img_channels}-{n_features}",
-            nn.Conv2d(img_channels, n_features, kernel_size=4, stride=2, padding=4, bias=False),
+            nn.Conv2d(img_channels, n_features, kernel_size=4, stride=2, padding=2, bias=False),
         )
         self.input_layers.add_module(f"initial-relu-{n_features}", nn.LeakyReLU(0.2, inplace=True))
+        
+        self.res_blocks = nn.Sequential()
+        for i in range(res_block_num):
+            self.res_blocks.add_module(
+                f"res_block_{i+1}",
+                ResBlock(n_features),
+            )
         
         # Create pyramid features to reach latent vector
         self.pyramid_features = nn.Sequential()
@@ -52,6 +78,7 @@ class Encoder(nn.Module):
         """Return latent vectors."""
 
         output = self.input_layers(input_tensor)
+        output = self.res_blocks(output)
         output = self.pyramid_features(output)
         output = self.final_conv_layer(output)
 
@@ -59,7 +86,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     
-    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int):
+    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int, res_block_num: int):
         
         super().__init__()
 
@@ -107,6 +134,13 @@ class Decoder(nn.Module):
             n_input_features = out_features
             pyramid_dim = pyramid_dim // 2
             
+        self.res_blocks = nn.Sequential()
+        for i in range(res_block_num):
+            self.res_blocks.add_module(
+                f"res_block_{i+1}",
+                ResBlock(n_features),
+            )
+            
         # Final layers
         self.final_layers = nn.Sequential()
         self.final_layers.add_module(
@@ -126,17 +160,18 @@ class Decoder(nn.Module):
         """Return generated image."""
         output = self.latent_input(input_tensor)
         output = self.inverse_pyramid(output)
+        output = self.res_blocks(output)
         output = self.final_layers(output)
         return output
 
 class Generator(nn.Module):
     
-    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int):
+    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int, res_block_num: int):
         
         super().__init__()
-        self.encoder1 = Encoder(img_size, latent_vec_size, img_channels, n_features)
-        self.decoder = Decoder(img_size, latent_vec_size, img_channels, n_features)
-        self.encoder2 = Encoder(img_size, latent_vec_size, img_channels, n_features)
+        self.encoder1 = Encoder(img_size, latent_vec_size, img_channels, n_features, res_block_num)
+        self.decoder = Decoder(img_size, latent_vec_size, img_channels, n_features, res_block_num)
+        self.encoder2 = Encoder(img_size, latent_vec_size, img_channels, n_features, res_block_num)
         
     def forward(self, input_tensor: Tensor):
         
@@ -148,29 +183,32 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     
-    def __init__(self, img_size: Tuple[int, int], img_channels: int, n_features: int):
+    def __init__(self, img_size: Tuple[int, int], img_channels: int, n_features: int, res_block_num: int):
         super().__init__()
-        encoder = Encoder(img_size, 1, img_channels, n_features)
-        layers = []
-        for block in encoder.children():
-            if isinstance(block, nn.Sequential):
-                layers.extend(list(block.children()))
-            else:
-                layers.append(block)
+        self.encoder = Encoder(img_size, 1, img_channels, n_features, res_block_num)
+        #layers = []
+        #for block in encoder.children():
+        #    if isinstance(block, nn.Sequential):
+        #        layers.extend(list(block.children()))
+        #    else:
+        #        layers.append(block)
 
-        self.features = nn.Sequential(*layers[:-1])
-        self.classifier = nn.Sequential(layers[-1])
-        self.classifier.add_module("Sigmoid", nn.Sigmoid())
+        #self.features = nn.Sequential(*layers[:-1])
+        #self.classifier = nn.Sequential(layers[-1])
+        #self.classifier.add_module("Sigmoid", nn.Sigmoid())
 
     def forward(self, input_tensor):
         """Return class of object and features."""
-        features = self.features(input_tensor)
-        classifier = self.classifier(features)
-        classifier = classifier.view(-1, 1).squeeze(1)
-        return classifier, features
+        output = self.encoder(input_tensor)
+        putput = output.view(-1,1).squeeze(1)
+        return output
+        #features = self.features(input_tensor)
+        #classifier = self.classifier(features)
+        #classifier = classifier.view(-1, 1).squeeze(1)
+        #return classifier, features
 
 class Ganomaly(nn.Module):
-    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int, device):
+    def __init__(self, img_size: Tuple[int, int], latent_vec_size: int, img_channels: int, n_features: int, res_block_num: int, device):
         super().__init__()
         super().__init__()
         self.generator: Generator = Generator(
@@ -178,11 +216,13 @@ class Ganomaly(nn.Module):
             latent_vec_size=latent_vec_size,
             img_channels=img_channels,
             n_features=n_features,
+            res_block_num=res_block_num,
         ).to(device)
         self.discriminator: Discriminator = Discriminator(
             img_size=img_size,
             img_channels=img_channels,
             n_features=n_features,
+            res_block_num=res_block_num,
         ).to(device)
         self.weights_init(self.generator)
         self.weights_init(self.discriminator)

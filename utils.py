@@ -47,7 +47,7 @@ class MvtecDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         f = self.files[idx]
         image = Image.open(os.path.join(self.path, f))
-        image = image.resize((256,256))
+        image = image.resize((256,256), resample = Image.BILINEAR)
         transform = transforms.ToTensor()
         return transform(image)
 
@@ -55,7 +55,51 @@ class MvtecDataset(torch.utils.data.Dataset):
         return len(self.files)
 
     
-    
+class MvtecDataset_test(torch.utils.data.Dataset):
+    def __init__(self, category, condition="anomaly"):
+        self.path = "mvtec_anomaly_detection/"+category+"/test/"
+        subfiles = os.listdir(self.path)
+        self.img_files = []
+        for f in subfiles:
+            if condition == "anomaly":
+                if f != "good":
+                    imgs = os.listdir(os.path.join(self.path, f))
+                    for img in imgs:
+                        self.img_files.append(os.path.join(self.path,f,img))
+            else:
+                if f == "good":
+                    imgs = os.listdir(os.path.join(self.path, f))
+                    for img in imgs:
+                        self.img_files.append(os.path.join(self.path,f,img))
+
+    def __getitem__(self, idx):
+        f = self.img_files[idx]
+        image = Image.open(f)
+        image = image.resize((256,256), resample = Image.BILINEAR)
+        transform = transforms.ToTensor()
+        return transform(image)
+
+    def __len__(self):
+        return len(self.img_files)
+
+def gradient_penalty(discriminator, real, fake, device="cpu"):
+    BATCH_SIZE, C, H, W = real.shape
+    epsilon = torch.rand((BATCH_SIZE, 1, 1, 1)).repeat(1, C, H, W).to(device)
+    interpolated_images = real * epsilon + fake * (torch.ones_like(epsilon) - epsilon)
+
+    mixed_scores = discriminator(interpolated_images)
+
+    gradient = torch.autograd.grad(
+        inputs=interpolated_images,
+        outputs=mixed_scores,
+        grad_outputs=torch.ones_like(mixed_scores),
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    gradient = gradient.view(gradient.shape[0], -1)
+    gradient_norm = gradient.norm(2, dim=1)
+    gradient_penalty = torch.mean((gradient_norm - 1) ** 2)
+    return gradient_penalty
     
     
     
